@@ -1,4 +1,8 @@
-import csv
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+
 import random
 import csv
 import logging
@@ -8,21 +12,8 @@ import polars as pl
 from faker import Faker
 from datetime import date, datetime, timedelta
 
-from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-# Configure logging.
-logging.basicConfig(
-    level=logging.INFO,                    
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler()]
-)
-
-
-def _create_data(locale: str) -> Faker:
+def create_data(locale: str) -> Faker:
     """
     Creates a Faker instance for generating localized fake data.
     Args:
@@ -35,7 +26,7 @@ def _create_data(locale: str) -> Faker:
     return Faker(locale)
 
 
-def _generate_record(fake: Faker) -> list:
+def generate_record(fake: Faker) -> list:
     """
     Generates a single fake user record.
     Args:
@@ -68,12 +59,15 @@ def _generate_record(fake: Faker) -> list:
     ]
 
 
-def _write_to_csv() -> None:
+def write_to_csv(file_path: str, rows: int) -> None:
     """
     Generates multiple fake user records and writes them to a CSV file.
+    Args:
+        file_path (str): The path where the CSV file will be saved.
+        rows (int): The number of fake user records to generate.
     """
     # Create a Faker instance with Romanian data.
-    fake = _create_data("ro_RO")
+    fake = create_data("es_MX")
     
     # Define the CSV headers.
     headers = [
@@ -82,22 +76,56 @@ def _write_to_csv() -> None:
         "session_duration", "download_speed", "upload_speed", "consumed_traffic"
     ]
 
-    # Establish number of rows based date.
-    if str(date.today()) == "2024-09-23":
-        rows = random.randint(100_372, 100_372)
-    else:
-        rows = random.randint(0, 1_101)
-    
     # Open the CSV file for writing.
-    with open("/opt/airflow/data/raw_data.csv", mode="a", encoding="utf-8", newline="") as file:
+    with open(file_path, mode="w", encoding="utf-8", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(headers)
         
         # Generate and write each record to the CSV.
         for _ in range(rows):
-            writer.writerow(_generate_record(fake))
+            writer.writerow(generate_record(fake))
     # Log the action.
     logging.info(f"Written {rows} records to the CSV file.")
+
+
+def add_id(file_name) -> None:
+    """
+    Adds a unique UUID to each row in a CSV file.
+    Args:
+        file_name (str): The path to the CSV file to be processed.
+    """
+    # Load the CSV into a Polars DataFrame.
+    df = pl.read_csv(file_name)
+    # Generate a list of UUIDs (one for each row).
+    uuid_list = [str(uuid.uuid4()) for _ in range(df.height)]
+    # Add a new column with unique IDs.
+    df = df.with_columns(pl.Series("unique_id", uuid_list))
+    # Save the updated DataFrame back to a CSV.
+    df.write_csv(file_name)
+    # Log the action.
+    logging.info("Added UUID to the dataset.")
+
+
+def update_datetime(file_name: str, run: str) -> None:
+    """
+    Update the 'accessed_at' column in a CSV file with the appropriate timestamp.
+    Args:
+        file_name (str): The path to the CSV file to be updated.
+        run (str): Specifies the timestamp to be used.
+    """
+    if run == "next":
+        # Get the current time without milliseconds and calculate yesterday's time.
+        current_time = datetime.now().replace(microsecond=0)
+        yesterday_time = str(current_time - timedelta(days=1))
+        # Load the CSV into a Polars DataFrame.
+        df = pl.read_csv(file_name)
+        # Replace all values in the 'accessed_at' column with yesterday's timestamp.
+        df = df.with_columns(pl.lit(yesterday_time).alias("accessed_at"))
+        # Save the updated DataFrame back to a CSV file.
+        df.write_csv(file_name)
+        # Log the action.
+        logging.info("Updated accessed timestamp.")
+
 
 
 def _add_id() -> None:
@@ -121,7 +149,7 @@ def _update_datetime() -> None:
     Update the 'accessed_at' column in a CSV file with the appropriate timestamp.
     """
         # Change date only for next runs.
-    if str(date.today()) != "2024-09-23":
+    if str(date.today()) != "2025-09-23":
         # Get the current time without milliseconds and calculate yesterday's time.
         current_time = datetime.now().replace(microsecond=0)
         yesterday_time = str(current_time - timedelta(days=1))
